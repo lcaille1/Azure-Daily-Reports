@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
   Gets a list of all recently created resources across all subscriptions that have the Tag: $TagName and send an email report.
     
@@ -31,83 +31,57 @@
 
 
 $TagName = "CreatedOnDate"
-$AzROAccount = "AzReadOnlyAccount@domain.co.uk"
+$TagCreator = "Creator"
+$AzROAccount = ""
 $GetAdditionalLogBased = $false
-$CultureGB = New-Object System.Globalization.CultureInfo("en-GB")
+$CultureFR = New-Object System.Globalization.CultureInfo("fr-FR")
 
-$DaysAgo = -2
-#$DaysAgo = -7
+#$DaysAgo = -2
+$DaysAgo = -7
 $StartDate = ((Get-Date -DisplayHint Date).Date).AddDays($DaysAgo)
 
-$DaysUntil = $DaysAgo+1
-#$DaysUntil = -1
+#$DaysUntil = $DaysAgo+1
+$DaysUntil = +1
 $EndDate = ((Get-Date -DisplayHint Date).Date).AddDays($DaysUntil)
 
 # Email report config
-$EmailRecipients = "Jack.Rudlin@domain.co.uk","Jack.Test@domain.org.uk"
-$EmailSubject = "Azure Resources Reports"
-
-# SendGrid
-$AutomationAccount = 'Azure Automation Account Name'
-$AutomationAccountRG = 'Azure Automation Account RG'
-$Runbook = 'Email-SendGrid'
+$EmailServer = "smtp.server.com"
+$fromEmailAddress = "user@domain.com"
+$EmailRecipients = "user@domain.com"
+$EmailSubject = "Azure Created Resources By/Date/Cost Daily Report"
 
 #-----------------------------------------------------------[Functions]------------------------------------------------------------
-Function Email-SendGrid {
-    [CmdletBinding()]
-        Param(
-            [parameter(Mandatory=$True)]
-            [ValidateNotNullOrEmpty()]
-            $EmailBody,
-            [parameter(Mandatory=$True)]
-            [ValidateNotNullOrEmpty()]
-            $ToEmailAddress,
-            [parameter(Mandatory=$True)]
-            [ValidateNotNullOrEmpty()]
-            $Subject
-        )
-
-    # Ensures you do not inherit an AzureRMContext in your runbook
-    Disable-AzContextAutosave –Scope Process
-
-    # Connect to Azure with RunAs account
-    $ServicePrincipalConnection = Get-AutomationConnection -Name 'AzureRunAsConnection'
-
-    Add-AzAccount `
-        -ServicePrincipal `
-        -Tenant $ServicePrincipalConnection.TenantId `
-        -ApplicationId $ServicePrincipalConnection.ApplicationId `
-        -CertificateThumbprint $ServicePrincipalConnection.CertificateThumbprint
-
-    # Set the subscription context
-    $AzureContext = Set-AzContext -SubscriptionId $ServicePrincipalConnection.SubscriptionID | Out-Null
-
-    $params = @{"EmailBody"=$EmailBody;"EmailAddress"=$ToEmailAddress;"EmailSubject"=$Subject}
-
-    Start-AzAutomationRunbook `
-        –AutomationAccountName $AutomationAccount `
-        –Name $Runbook `
-        -ResourceGroupName $AutomationAccountRG `
-        -DefaultProfile $AzureContext `
-        –Parameters $params -wait
-
+Function Email {
+	Send-MailMessage -To $EmailRecipients -From $fromEMailAddress -Subject $EmailSubject -Body $Body -BodyAsHtml -SmtpServer $EmailServer
+ 
 }
 
 #-----------------------------------------------------------[Script]------------------------------------------------------------
 
 # Get Read Only account for secure vault
-try{
-    $Creds = Get-AutomationPSCredential -Name $AzROAccount
-    Write-output -inputobject "Got account creds for: [$AzROAccount]"
-} Catch {
-    write-error -Message "Could not get creds for account: [$AzROAccount] $_"
-    return
+#try{
+#    $Creds = Get-AutomationPSCredential -Name $AzROAccount
+#    Write-output -inputobject "Got account creds for: [$AzROAccount]"
+#} Catch {
+#    write-error -Message "Could not get creds for account: [$AzROAccount] $_"
+#    return
+#}
+
+
+
+#If(-not(Get-AzContext)){
+#    Write-output -inputobject "Connecting AzAccount"
+#    Connect-AzAccount -Credential $Creds
+#}
+
+try
+{
+    Write-Output ("Logging in to Azure...")
+    Connect-AzAccount -Identity
 }
-
-
-If(-not(Get-AzContext)){
-    Write-output -inputobject "Connecting AzAccount"
-    Connect-AzAccount -Credential $Creds
+catch {
+    Write-Error -Message $_.Exception
+    throw $_.Exception
 }
 
 import-module Az.Billing
@@ -140,21 +114,30 @@ If($EnabledSubs.Count -gt 0){
         $Tagged = Get-AzResource -TagName $TagName
         write-output -InputObject "[$($Tagged.Count)] tagged resources retrieved."
 
+		# Get resources with CreatedBy
+        write-output -InputObject "`nGetting tagged resources in subscription: [$($Sub.Name)] with Tag: [$TagCreator]."
+        $TaggedCreator = Get-AzResource -TagName $TagCreator
+		write-output -InputObject "[$($TaggedCreator.Count)] tagged resources retrieved."
+
         # Remove tags with the 'Original' value
         $TaggedNotOriginal = $Tagged | Where-Object -FilterScript { $_.Tags.CreatedOnDate -ne "Original"}
         write-output -InputObject "[$($TaggedNotOriginal.Count)] tagged resources with a date retrieved."
-
+		
         # Loop through all the filtered resources
         ForEach($TaggedResource in $TaggedNotOriginal){
             write-output -InputObject "`nChecking resource: [$($TaggedResource.Name)]"
+			$TaggedCreator2= (Get-AzResource -Name $TaggedResource.Name).Tags.Creator
             $ResourceDate = Get-Date $TaggedResource.Tags.CreatedOnDate
+			
+						
 
             If(($ResourceDate -gt $StartDate) -and ($ResourceDate -lt $EndDate)){
-                write-output -InputObject "Resource was created on: [$ResourceDate]"          
-                write-output -InputObject "Type: [$($TaggedResource.Type)], Location: [$($TaggedResource.Location)]"
+                write-output -InputObject "Resource was created by: [$TaggedCreator2]"
+				write-output -InputObject "Resource was created on: [$ResourceDate]"            
+                write-output -InputObject "Type: [$($TaggedResource.Type)], Location: [$($TaggedResource.Location)] "
                 $Log = $UniqueFilteredLogs | Where-Object -FilterScript {$_.ResourceID -eq $TaggedResource.ResourceId}
                 
-                write-output -InputObject "CreatedBy: [$($Log.Caller)]"
+                
 
                 #Try and get cost:
                 $CostObject = $null
@@ -190,14 +173,14 @@ If($EnabledSubs.Count -gt 0){
                     $CostPerMonth = "Could not obtain pricing info or likely free."
                 }
                 
-                Write-Output -InputObject "Estimated cost per month: [£$($CostPerMonth)]"
+                Write-Output -InputObject "Estimated cost per month: [€$($CostPerMonth)]"
                 
                 $OutputList.Add( (New-Object -TypeName PSObject -Property @{`
-                    "CreationDate"="$((Get-Date $ResourceDate).toString("dd/MM/yyyy HH:mm:ss", $CultureGB))";
+                    "CreationDate"="$((Get-Date $ResourceDate).toString("dd/MM/yyyy HH:mm:ss", $CultureFR))";
                     "Resource"="$($TaggedResource.ResourceName)"
                     "Type"="$($TaggedResource.Type)";
                     "Location"="$($TaggedResource.Location)";
-                    "CreatedBy"="$($Log.Caller)";
+                    "CreatedBy"="$TaggedCreator2";
                     "Cost"="$CostPerMonth";
                 }) ) | Out-Null
 
@@ -225,17 +208,19 @@ TD {border-width: 1px; padding: 3px; border-style: solid; border-color: black;}
         #$OutputList | ConvertTo-Html -Head $Header | Out-File -FilePath c:\temp\PoshHTML.html -Force -Confirm:$false
         $Body = [string]($OutputList | ConvertTo-Html -Head $Header)
         
-        Email-SendGrid `
+        Email `
             -EmailBody $Body `
             -ToEmailAddress $EmailRecipients `
-            -Subject $EmailSubject
+            -Subject $EmailSubject `
+			-fromEmailAddress $fromEMailAddress
 
     } else {
         # No new resources. Send an email as such.
-        Email-SendGrid `
+        Email `
             -EmailBody "No new resources created between: [$(Get-Date $StartDate -Format "dd/MM/yy HH:mm:ss")] and [$(Get-Date $EndDate -Format "dd/MM/yy HH:mm:ss")]." `
             -ToEmailAddress $EmailRecipients `
-            -Subject $EmailSubject
+            -Subject $EmailSubject `
+			-fromEmailAddress $fromEMailAddress
     }
 
 
