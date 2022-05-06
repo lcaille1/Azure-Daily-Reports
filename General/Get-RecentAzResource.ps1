@@ -32,12 +32,12 @@
 
 $TagName = "CreatedOnDate"
 $TagCreator = "Creator"
-$AzROAccount = ""
+$AzROAccount = "infra-qua-aa-01_h8F2rjZAhXAji2PlKy5ApsHN1GY6IDO2ZnVHH8TEE9Y="
 $GetAdditionalLogBased = $false
 $CultureFR = New-Object System.Globalization.CultureInfo("fr-FR")
 
 #$DaysAgo = -2
-$DaysAgo = -7
+$DaysAgo = -30
 $StartDate = ((Get-Date -DisplayHint Date).Date).AddDays($DaysAgo)
 
 #$DaysUntil = $DaysAgo+1
@@ -45,9 +45,9 @@ $DaysUntil = +1
 $EndDate = ((Get-Date -DisplayHint Date).Date).AddDays($DaysUntil)
 
 # Email report config
-$EmailServer = "smtp.server.com"
-$fromEmailAddress = "user@domain.com"
-$EmailRecipients = "user@domain.com"
+$EmailServer = "Mailout.elis.com"
+$fromEmailAddress = "Azurereports@elis.com"
+$EmailRecipients = "laurent.cailleux@elis.com"
 $EmailSubject = "Azure Created Resources By/Date/Cost Daily Report"
 
 #-----------------------------------------------------------[Functions]------------------------------------------------------------
@@ -58,21 +58,6 @@ Function Email {
 
 #-----------------------------------------------------------[Script]------------------------------------------------------------
 
-# Get Read Only account for secure vault
-#try{
-#    $Creds = Get-AutomationPSCredential -Name $AzROAccount
-#    Write-output -inputobject "Got account creds for: [$AzROAccount]"
-#} Catch {
-#    write-error -Message "Could not get creds for account: [$AzROAccount] $_"
-#    return
-#}
-
-
-
-#If(-not(Get-AzContext)){
-#    Write-output -inputobject "Connecting AzAccount"
-#    Connect-AzAccount -Credential $Creds
-#}
 
 try
 {
@@ -85,8 +70,13 @@ catch {
 }
 
 import-module Az.Billing
+$Azsub = Get-AzSubscription
+Write-Output ("AzSubscription = [$Azsub]")
 Get-AzSubscription
+
 $EnabledSubs = Get-AzSubscription | where-object -Property "state" -eq "Enabled"
+
+Write-Output ("EnableSubs = [$EnabledSubs]")
 
 write-output -InputObject "`nUsing date range from: [$StartDate] to: [$EndDate]"
 
@@ -97,7 +87,8 @@ If($EnabledSubs.Count -gt 0){
         
         # Set the subscription context
         Set-AzContext -SubscriptionId $Sub.Id | Out-Null
-        
+        write-Output ("Connected to Subscription = [$Subs]")
+		
         # Get resources from Azure Monitor Logs so that we can use this info to retrieve the user who created the resource.
         write-output -InputObject "`nGetting log based resources in subscription: [$($Sub.Name)] between: [$StartDate] and: [$EndDate]"
         $AllLogs = Get-AzLog -StartTime $StartDate -EndTime $EndDate -Status "Succeeded" -WarningAction "SilentlyContinue"
@@ -147,9 +138,9 @@ If($EnabledSubs.Count -gt 0){
                 $CostObject = Get-AzConsumptionUsageDetail -InstanceName $TaggedResource.ResourceName -StartDate $StartDate -EndDate $EndDate `
                                 | Sort-Object -Property UsageQuantity -Descending `
                                 | Select -First 1
-                If($CostObject){
-                    $Cost = ($CostObject.PretaxCost | Measure-Object -Sum).Sum
-                } else {
+                #If($CostObject){
+                #    $Cost = ($CostObject.PretaxCost | Measure-Object -Sum).Sum
+                #} else {
                     
                     # Gets cost of parent resource - this may then produce reports with duplicates
                     # If($TaggedResource.ParentResource -like "*/*"){
@@ -165,8 +156,9 @@ If($EnabledSubs.Count -gt 0){
                     #     $Cost = ($CostObject.PretaxCost | Measure-Object -Sum).Sum
                     # }
 
-                }
-                
+                #}
+                $Cost = ($CostObject.PretaxCost | Measure-Object -Sum).Sum
+
                 If($Cost.Count -gt 0){
                     $CostPerMonth = [math]::Round($($Cost * 365) / 12,2)
                 } else {
@@ -182,6 +174,7 @@ If($EnabledSubs.Count -gt 0){
                     "Location"="$($TaggedResource.Location)";
                     "CreatedBy"="$TaggedCreator2";
                     "Cost"="$CostPerMonth";
+					"Subscription"="[$($Sub.Name)]";
                 }) ) | Out-Null
 
             } else {
@@ -194,10 +187,22 @@ If($EnabledSubs.Count -gt 0){
         
 
     }
+ write-output -InputObject "BodyCount is [$($OutputList.Count)]"
+    If($OutputList.Count -eq 0){
 
-    If($OutputList.Count -gt 0){
+		$Body = "No new resources created between: [$(Get-Date $StartDate -Format "dd/MM/yy HH:mm:ss")] and [$(Get-Date $EndDate -Format "dd/MM/yy HH:mm:ss")]."
 
-$Header = @"
+		   Email `
+            -EmailBody $Body `
+            -ToEmailAddress $EmailRecipients `
+            -Subject $EmailSubject `
+			-fromEmailAddress $fromEMailAddress
+write-output -InputObject "Empty Body is [$Body]"
+
+    } else {
+		write-output -InputObject "NotEmpty Body is [$Body]"
+
+		$Header = @"
 <style>
 TABLE {border-width: 1px; border-style: solid; border-color: black; border-collapse: collapse;}
 TH {border-width: 1px; padding: 3px; border-style: solid; border-color: black; background-color: #6495ED;}
@@ -214,13 +219,8 @@ TD {border-width: 1px; padding: 3px; border-style: solid; border-color: black;}
             -Subject $EmailSubject `
 			-fromEmailAddress $fromEMailAddress
 
-    } else {
         # No new resources. Send an email as such.
-        Email `
-            -EmailBody "No new resources created between: [$(Get-Date $StartDate -Format "dd/MM/yy HH:mm:ss")] and [$(Get-Date $EndDate -Format "dd/MM/yy HH:mm:ss")]." `
-            -ToEmailAddress $EmailRecipients `
-            -Subject $EmailSubject `
-			-fromEmailAddress $fromEMailAddress
+     
     }
 
 
